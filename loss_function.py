@@ -10,7 +10,7 @@ import math
 args = read_args()
 
 
-def cross_entropy_loss(c_embed_batch, embed_d, outemb_d):
+def cross_entropy_loss(c_embed_batch, embed_d, outemb_d, true_label):
 
 	batch_size = c_embed_batch.shape[0] * c_embed_batch.shape[1]
     # make c_embed 3D tensor. Batch_size * 1 * embed_d
@@ -27,10 +27,13 @@ def cross_entropy_loss(c_embed_batch, embed_d, outemb_d):
 	#out_p = torch.bmm(c_embed, pos_embed) # positive neighbors
 	#out_n = - torch.bmm(c_embed, neg_embed) # negative neighbors
 
-	sum_p = F.logsigmoid(c_embed_out) #log(1/(1+exp(-x)))    sigmoid = 1/(1+exp(-x))
+	predictions = F.logsigmoid(c_embed_out) #log(1/(1+exp(-x)))    sigmoid = 1/(1+exp(-x))
+	#binary cross entropy loss
+	loss = nn.BCELoss()
+	loss_mean = loss(predictions, true_label)
 	#sum_n = F.logsigmoid(out_n)
 	#loss_sum = - (sum_p + sum_n)
-	loss_sum = - sum_p
+	#loss_sum = - sum_p
 	#loss_sum = loss_sum.sum() / batch_size
 
 	return loss_sum.mean()
