@@ -22,7 +22,7 @@ class Net(nn.Module):
 resnet18 = models.resnet18(pretrained=True, progress=True)
 #model = resnet18
 model = Net(resnet18)
-print(model) #output size 16*512*1*1
+#print(model) #output size 16*512*1*1
 
 
 class weiboDataset(Dataset):
@@ -32,6 +32,7 @@ class weiboDataset(Dataset):
         self.toTensor = transforms.ToTensor()
     def __getitem__(self, index):
         path = self.image_files[index]
+        #print(path)
         img = Image.open(path).convert('RGB')
         img = self.transform(img)
         img = self.toTensor(img)
@@ -39,12 +40,18 @@ class weiboDataset(Dataset):
     def __len__(self):
         return len(self.image_files)
 
+
 file_path = "F:\\weibo_img\\"
+all_img = os.listdir(file_path)
+print(all_img)
 dataset = weiboDataset(file_path, 224)
-train_loader = DataLoader(dataset, batch_size=16, shuffle=True)
-EPOCH = 5
+train_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+EPOCH = 1
 
 for epoch in range(EPOCH):
     for step, data in enumerate(train_loader):
+        txt_name = all_img[step][:-4]
         out = model(data)
-        print(out.size())
+        out_np = out.detach().numpy()
+        out_np = np.reshape(out_np, (1,512))
+        np.savetxt('F:\\visual_features\\'+txt_name+'.txt', out_np)
