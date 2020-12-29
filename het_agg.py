@@ -60,7 +60,7 @@ class Bi_RNN(nn.Module):
 class SameType_Agg_Bi_RNN(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, batch_size, output_dim, num_layers=1, rnn_type='LSTM'):
-        super(Bi_RNN, self).__init__()
+        super(SameType_Agg_Bi_RNN, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.batch_size = batch_size
