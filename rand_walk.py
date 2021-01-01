@@ -3,23 +3,31 @@ from tqdm import tqdm
 
 data_path = '/rwproject/kdd-db/20-rayw1/fyp_code/'
 # input
-tweet_user_f = 'tweet_user.txt'
-user_tweet_f = 'user_tweet.txt'
+post_user_f = 'tweet_user.txt'
+user_post_f = 'user_tweet.txt'
 user_user_f = 'user_user.txt'
 # output
-het_neigh_f = 'het_neigh.txt'
+post_neigh_f = 'post_neighbors.txt'
+users_involved_f = 'users_involved.txt'
 
+# for random walk with restart
 restart_rate = 0.5
-max_neigh_size = 80 #有個node會卡在92 不知為何
-neigh_type_size_constraint = 46  # max num of same type neighbors
+min_neigh_u = 60
+min_neigh_p = 15
+num_neigh_to_record = 100
 
-t_adj_list, u_adj_list = dict(), dict()
-t_neigh_list, u_neigh_list = dict(), dict()
+# for neighbor selection
+max_uniq_neigh_u = 20
+max_uniq_neigh_p = 5
+
+p_adj_list, u_adj_list = dict(), dict()
+p_neigh_list = dict()
+u_involved = set()
 
 print("Read the graph...")
 for adj_f, adj_list, main_type, neigh_type in [
-    (tweet_user_f, t_adj_list, 't', 'u'), 
-    (user_tweet_f, u_adj_list, 'u', 't'), 
+    (post_user_f, p_adj_list, 'p', 'u'), 
+    (user_post_f, u_adj_list, 'u', 'p'), 
     (user_user_f, u_adj_list, 'u', 'u'), 
     ]:
     with open(data_path + adj_f, 'r') as f:
@@ -29,34 +37,70 @@ for adj_f, adj_list, main_type, neigh_type in [
             if node not in adj_list:
                 adj_list[node] = []
             adj_list[node].extend([neigh_type + i for i in l[1].split(', ')])
-    
+
+def add_neighbor(cur_node):
+    if cur_node[0] == 'u':
+        if len(u_neighbors) >= min_neigh_u and len(p_neighbors) < min_neigh_p:
+            return
+        u_neighbors.append(cur_node)
+        u_neigh_uniq.add(cur_node)
+    else:  # cur_node[0] == 'p'
+        if len(p_neighbors) >= min_neigh_p and len(u_neighbors) < min_neigh_u:
+            return
+        p_neighbors.append(cur_node)
+        p_neigh_uniq.add(cur_node)
+
+def get_top_k_most_frequent(neighbors, k):
+    counter = dict()
+    for node in neighbors:
+        if node not in counter:
+            counter[node] = 0
+        counter[node] += 1
+    items = sorted(list(counter.items()), key=lambda x: -x[1])
+    top_k = [items[i][0] for i in range(min(k, len(items)))]
+    return top_k
+
+def write_neighbor(start_node):
+    top_k_u = get_top_k_most_frequent(u_neighbors, max_uniq_neigh_u)
+    top_k_p = get_top_k_most_frequent(p_neighbors, max_uniq_neigh_p + 1)[1:]  # hack: exclude self
+    top_k_u_len.append(len(top_k_u))
+    top_k_p_len.append(len(top_k_p))
+    neigh_list[start_node] = {'u':top_k_u,'p':top_k_p}
+
 print("Each node takes turns to be the starting node...")
-lists = [(t_adj_list, t_neigh_list), (u_adj_list, u_neigh_list)]
+top_k_u_len = []
+top_k_p_len = []
+lists = [(p_adj_list, p_neigh_list),]
 for adj_list, neigh_list in lists:
     for start_node in tqdm(list(adj_list.keys())):
-        neigh_L, u_L, t_L = 0, 0, 0
-        neigh_list[start_node] = []
+        u_neighbors, p_neighbors = [], []
+        u_neigh_uniq, p_neigh_uniq = set(), set()
         cur_node = start_node
-        while neigh_L < max_neigh_size:
-            # print(start_node, neigh_L)
+        while len(u_neighbors) + len(p_neighbors) < num_neigh_to_record:
             rand_p = random.random() #return p
             if rand_p < restart_rate:
                 cur_node = start_node
             else:
-                if cur_node[0] == 't':
-                    cur_node = random.choice(t_adj_list[cur_node])
-                    if u_L < neigh_type_size_constraint:
-                        neigh_list[start_node].append(cur_node)
-                        neigh_L += 1
-                        u_L += 1
+                if cur_node[0] == 'p':
+                    cur_node = random.choice(p_adj_list[cur_node])
+                    add_neighbor(cur_node)
                 elif cur_node[0] == 'u':
                     cur_node = random.choice(u_adj_list[cur_node])
-                    if t_L < neigh_type_size_constraint:
-                        neigh_list[start_node].append(cur_node)
-                        neigh_L += 1
-                        t_L += 1
+                    add_neighbor(cur_node)
+        write_neighbor(start_node)
+        u_involved = u_involved.union(neigh_list[start_node]['u'])
 
 print("Save the result...")
-with open(data_path + het_neigh_f, 'w') as f:
-    for neigh_list in [t_neigh_list, u_neigh_list]:
-        f.writelines([node + ':' + ','.join(neighs) + '\n' for node, neighs in neigh_list.items()])
+with open(data_path + post_neigh_f, 'w') as f:
+    print('Writing {} posts\' neighbors.'.format(len(p_neigh_list)))
+    f.writelines([
+        '{}: {} {}\n'.format(node, ' '.join(neighs['p']), ' '.join(neighs['u']))
+        for node, neighs in p_neigh_list.items()
+    ])
+with open(data_path + users_involved_f, 'w') as f:
+    u_involved = list(u_involved)
+    print('Writing {} users involved.'.format(len(u_involved)))
+    f.write(' '.join(u_involved) + '\n')
+
+print("Top-k post neighrbors: Mean of k = {}".format(sum(top_k_p_len)/len(top_k_p_len)))
+print("Top-k user neighrbors: Mean of k = {}".format(sum(top_k_u_len)/len(top_k_u_len)))
