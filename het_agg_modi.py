@@ -132,7 +132,7 @@ for post in post_nodes:
 
 class Het_GNN(nn.Module):
     #features: list of HetNode class
-    def __init__(self, input_dim, ini_hidden_dim, hidden_dim, batch_size, content_dict={}, num_layers=1, rnn_type='LSTM', embed_d = 2000):
+    def __init__(self, input_dim, ini_hidden_dim, hidden_dim, batch_size, content_dict={}, num_layers=1, rnn_type='LSTM', embed_d = 200):
         super(Het_GNN, self).__init__()
         self.input_dim = input_dim
         self.ini_hidden_dim = ini_hidden_dim
@@ -219,6 +219,7 @@ class Het_GNN(nn.Module):
         init_linear = nn.Linear(input_dim, ini_hidden_dim)
         lstm = eval('nn.' + rnn_type)(ini_hidden_dim, hidden_dim, num_layers, batch_first=True, bidirectional=True)
         linear = nn.Linear(hidden_dim * 2, output_dim)
+        #print(list(lstm.parameters()))
         linear_input = init_linear(content_embedings)
         #print(linear_input.shape)
         linear_input = linear_input.view(linear_input.shape[0],1,linear_input.shape[1])
@@ -239,6 +240,7 @@ class Het_GNN(nn.Module):
         #print('c_agg_batch', c_agg_batch.shape)
         #print('u_agg_batch', u_agg_batch.shape)
         #print('p_agg_batch', p_agg_batch.shape)
+        #print("===========")
         c_agg_batch_2 = torch.cat((c_agg_batch, c_agg_batch), 1).view(len(c_agg_batch), self.embed_d * 2)
         u_agg_batch_2 = torch.cat((c_agg_batch, u_agg_batch), 1).view(len(c_agg_batch), self.embed_d * 2)
         p_agg_batch_2 = torch.cat((c_agg_batch, p_agg_batch), 1).view(len(c_agg_batch), self.embed_d * 2)
@@ -257,7 +259,7 @@ class Het_GNN(nn.Module):
 
         return weight_agg_batch
     
-    def cross_entropy_loss(self, c_embed_batch, embed_d, outemb_d, true_label):
+    def output(self, c_embed_batch, embed_d, outemb_d):
 
         batch_size = 1
         # make c_embed 3D tensor. Batch_size * 1 * embed_d
@@ -266,8 +268,10 @@ class Het_GNN(nn.Module):
         fc = nn.Linear(embed_d, outemb_d)
         c_embed_out = fc(c_embed)
         #print('c_embed_out', c_embed_out)
-        predictions = torch.sigmoid(c_embed_out) #log(1/(1+exp(-x)))    sigmoid = 1/(1+exp(-x))
-        #binary cross entropy loss
+        predictions = F.sigmoid(c_embed_out) #log(1/(1+exp(-x)))    sigmoid = 1/(1+exp(-x))
+        return predictions
+
+    def BCELoss(self, predictions, true_label):
         loss = nn.BCELoss()
         #print('predictions_shape',predictions.shape)
         #print('predictions', predictions)
@@ -276,26 +280,40 @@ class Het_GNN(nn.Module):
             tensor_label = torch.FloatTensor([1,0])
         else:
             tensor_label = torch.FloatTensor([0,1])
+        #print(predictions)
         loss_sum = loss(predictions, tensor_label)
         return loss_sum.mean()
 
 
-net = Het_GNN([300, 512, 12], [500, 500, 500], 1000, 1)
+net = Het_GNN([300, 512, 12], [500, 500, 500], 100, 1)
 print(net)
-optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+optimizer = optim.Adam(net.parameters(), lr=0.01)
+#print(list(net.parameters()))
 running_loss = 0.0
+print('Start training')
 for epoch in range(10):
     print('Epoch:', epoch+1)
-    for i in range(len(post_nodes)):
-        print(i)
-        agg = net.node_het_agg(het_node=post_nodes[i], u_input_dim=2000, u_hidden_dim=500, u_ini_hidden_dim=500, u_batch_size=1, u_output_dim=2000, u_num_layers=1, u_rnn_type='LSTM', p_input_dim=2000, p_hidden_dim=500, p_ini_hidden_dim=500, p_batch_size=1, p_output_dim=2000, p_num_layers=1, p_rnn_type='LSTM')
-        loss = net.cross_entropy_loss(c_embed_batch=agg, embed_d=2000, outemb_d=2, true_label=post_nodes[i].label)
+    c = 0.0
+    for i in range(800):
+        agg = net.node_het_agg(het_node=post_nodes[i], u_input_dim=200, u_hidden_dim=500, u_ini_hidden_dim=500, u_batch_size=1, u_output_dim=200, u_num_layers=1, u_rnn_type='LSTM', p_input_dim=200, p_hidden_dim=500, p_ini_hidden_dim=500, p_batch_size=1, p_output_dim=200, p_num_layers=1, p_rnn_type='LSTM')
+        output = net.output(c_embed_batch=agg, embed_d=200, outemb_d=2)
+        #print(output)
+        _, predicted = torch.max(output, 2)
+        predicted = predicted.view(1)
+        #print(predicted)
+        a = torch.tensor(post_nodes[i].label, dtype=torch.long)
+        #print(a)
+        if predicted == a:
+            c+=1
+        loss = net.BCELoss(predictions=output, true_label=post_nodes[i].label)
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-        if i % 200 == 199:  # print every 200 mini-batches
-            print('[%d, %5d] loss: %.3f' %
-                  (epoch + 1, i + 1, running_loss / 200))
+        if i % 200 == 199:  # print every 100 mini-batches
+            #accuracy = c/200
+            print('Epoch: %d, step: %5d, loss: %.3f, acc: %.3f'%
+                  (epoch + 1, i + 1, running_loss / 200, c/200))
             running_loss = 0.0
+            c = 0.0
 print('Finish training')
 
