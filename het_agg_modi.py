@@ -116,8 +116,8 @@ def data_loader(pathway = 'F:/post_nodes/', node_type = "post"):
             user_node.append(node) 
         return user_node
 
-post_nodes = data_loader(pathway='F:/FYP_data/post_nodes/', node_type="post")
-user_nodes = data_loader(pathway='F:/FYP_data/user_nodes/', node_type="user")
+post_nodes = data_loader(pathway='F:/FYP_data/normalized_post_nodes/', node_type="post")
+user_nodes = data_loader(pathway='F:/FYP_data/normalized_user_nodes/', node_type="user")
 post_emb_dict = {}
 user_emb_dict = {}
 #content_dict = {}
@@ -128,11 +128,16 @@ for post in post_nodes:
 
 #print(post_nodes[5].emb)
 
+#def Bi_RNN(neighbor_id, node_type, post_emb_dict, user_emb_dict):
 
 
 class Het_GNN(nn.Module):
     #features: list of HetNode class
-    def __init__(self, input_dim, ini_hidden_dim, hidden_dim, batch_size, content_dict={}, num_layers=1, rnn_type='LSTM', embed_d = 200):
+    def __init__(self, input_dim, ini_hidden_dim, hidden_dim, batch_size,
+                 u_input_dim, u_hidden_dim, u_ini_hidden_dim, u_output_dim, u_num_layers,
+                 p_input_dim, p_hidden_dim, p_ini_hidden_dim, p_output_dim, p_num_layers,
+                 out_embed_d, outemb_d,
+                 u_batch_size = 1, p_batch_size = 1,content_dict={}, num_layers=1, u_rnn_type='LSTM', p_rnn_type='LSTM', rnn_type='LSTM', embed_d = 200):
         super(Het_GNN, self).__init__()
         self.input_dim = input_dim
         self.ini_hidden_dim = ini_hidden_dim
@@ -140,10 +145,24 @@ class Het_GNN(nn.Module):
         self.batch_size = batch_size
         self.num_layers = num_layers
         self.embed_d = embed_d
+        self.u_input_dim = u_input_dim
+        self.u_hidden_dim = u_hidden_dim
+        self.u_ini_hidden_dim = u_ini_hidden_dim
+        self.u_batch_size = u_batch_size
+        self.u_output_dim = u_output_dim
+        self.u_num_layers = u_num_layers
+        self.u_rnn_type = u_rnn_type
+        self.p_input_dim = p_input_dim
+        self.p_hidden_dim = p_hidden_dim
+        self.p_ini_hidden_dim = p_ini_hidden_dim
+        self.p_batch_size = p_batch_size
+        self.p_output_dim = p_output_dim
+        self.p_num_layers = p_num_layers
+        self.p_rnn_type = p_rnn_type
+        self.out_embed_d = out_embed_d
+        self.outemb_d = outemb_d
         #self.features = features
         self.content_dict = content_dict
-        self.act = nn.LeakyReLU()
-        self.softmax = nn.Softmax(dim = 1)
         self.p_neigh_att = nn.Parameter(torch.ones(embed_d * 2, 1), requires_grad=True)
         self.u_neigh_att = nn.Parameter(torch.ones(embed_d * 2, 1), requires_grad=True)
         # Define the initial linear hidden layer
@@ -157,8 +176,27 @@ class Het_GNN(nn.Module):
                                                  bidirectional=True)
         self.lstm_other = eval('nn.' + rnn_type)(self.ini_hidden_dim[2], self.hidden_dim, self.num_layers, batch_first=True,
                                                  bidirectional=True)
+        # Define same_type_agg
+        self.u_init_linear = nn.Linear(self.u_input_dim, self.u_ini_hidden_dim)
+        self.u_lstm = eval('nn.' + self.u_rnn_type)(self.u_ini_hidden_dim, self.u_hidden_dim, self.u_num_layers,
+                                                    batch_first=True, bidirectional=True)
+        self.u_linear = nn.Linear(self.u_hidden_dim * 2, self.u_output_dim)
+        self.p_init_linear = nn.Linear(self.p_input_dim, self.p_ini_hidden_dim)
+        self.p_lstm = eval('nn.' + self.p_rnn_type)(self.p_ini_hidden_dim, self.p_hidden_dim, self.p_num_layers,
+                                                    batch_first=True, bidirectional=True)
+        self.p_linear = nn.Linear(self.p_hidden_dim * 2, self.p_output_dim)
+        self.act = nn.LeakyReLU()
+        self.softmax = nn.Softmax(dim=1)
+        self.out_linear = nn.Linear(self.out_embed_d, self.outemb_d)
+        self.output_act = nn.Sigmoid()
 
-      
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Parameter):
+                nn.init.xavier_normal_(m.weight.data)
+                # nn.init.normal_(m.weight.data)
+                m.bias.data.fill_(0.1)
+
     def Bi_RNN(self, neighbor_id, node_type, post_emb_dict, user_emb_dict):
         # Forward pass through initial hidden layer
         input_a = []
@@ -174,15 +212,11 @@ class Het_GNN(nn.Module):
             input_b = torch.Tensor(input_b)
             linear_input_text = self.init_linear_text(input_a)
             linear_input_image = self.init_linear_image(input_b)
-            #print(linear_input_text.shape)
             linear_input_text = linear_input_text.view(linear_input_text.shape[0],1,linear_input_text.shape[1])
             linear_input_image = linear_input_image.view(linear_input_image.shape[0],1,linear_input_image.shape[1])
             lstm_out_text, self.hidden_text = self.lstm_text(linear_input_text)
             lstm_out_image, self.hidden_image = self.lstm_image(linear_input_image)
-            #print('lstm_out_image',lstm_out_image.shape)
-            #print('lstm_out_text',lstm_out_text.shape)
             concate = torch.cat((lstm_out_text, lstm_out_image), 1)
-            #print('concate',concate.shape)
         if node_type == "user":
             for i in neighbor_id:
                 if ("user", i) not in self.content_dict:
@@ -214,33 +248,32 @@ class Het_GNN(nn.Module):
     
     
     #features: list of [(id)]
-    def SameType_Agg_Bi_RNN(self, neighbor_id, node_type, input_dim, hidden_dim, ini_hidden_dim, batch_size, output_dim, num_layers=1, rnn_type='LSTM'):
+    def SameType_Agg_Bi_RNN(self, neighbor_id, node_type):
         content_embedings = self.Bi_RNN(neighbor_id, node_type, post_emb_dict, user_emb_dict)
-        init_linear = nn.Linear(input_dim, ini_hidden_dim)
-        lstm = eval('nn.' + rnn_type)(ini_hidden_dim, hidden_dim, num_layers, batch_first=True, bidirectional=True)
-        linear = nn.Linear(hidden_dim * 2, output_dim)
-        #print(list(lstm.parameters()))
-        linear_input = init_linear(content_embedings)
-        #print(linear_input.shape)
-        linear_input = linear_input.view(linear_input.shape[0],1,linear_input.shape[1])
-        lstm_out, hidden = lstm(linear_input)
-        last_state = linear(lstm_out)
-        mean_pooling = torch.mean(last_state, 0)
-        return mean_pooling
+        if node_type == 'post':
+            linear_input = self.p_init_linear(content_embedings)
+            linear_input = linear_input.view(linear_input.shape[0],1,linear_input.shape[1])
+            lstm_out, hidden = self.p_lstm(linear_input)
+            last_state = self.p_linear(lstm_out)
+            mean_pooling = torch.mean(last_state, 0)
+            return mean_pooling
+        else:
+            linear_input = self.u_init_linear(content_embedings)
+            linear_input = linear_input.view(linear_input.shape[0], 1, linear_input.shape[1])
+            lstm_out, hidden = self.u_lstm(linear_input)
+            last_state = self.u_linear(lstm_out)
+            mean_pooling = torch.mean(last_state, 0)
+            return mean_pooling
     
     
    
-    def node_het_agg(self, het_node, u_input_dim, u_hidden_dim, u_ini_hidden_dim, u_batch_size, u_output_dim, u_num_layers, u_rnn_type,
-                 p_input_dim, p_hidden_dim, p_ini_hidden_dim, p_batch_size, p_output_dim, p_num_layers, p_rnn_type): #heterogeneous neighbor aggregation
+    def node_het_agg(self, het_node): #heterogeneous neighbor aggregation
 
         #attention module
         c_agg_batch = self.Bi_RNN([het_node.node_id], het_node.node_type, post_emb_dict, user_emb_dict)
-        u_agg_batch = self.SameType_Agg_Bi_RNN(het_node.neighbors_user, "user", u_input_dim, u_hidden_dim, u_ini_hidden_dim, u_batch_size, u_output_dim, u_num_layers, u_rnn_type)
-        p_agg_batch = self.SameType_Agg_Bi_RNN(het_node.neighbors_post, "post", p_input_dim, p_hidden_dim, p_ini_hidden_dim, p_batch_size, p_output_dim, p_num_layers, p_rnn_type)
-        #print('c_agg_batch', c_agg_batch.shape)
-        #print('u_agg_batch', u_agg_batch.shape)
-        #print('p_agg_batch', p_agg_batch.shape)
-        #print("===========")
+        u_agg_batch = self.SameType_Agg_Bi_RNN(het_node.neighbors_user, "user")
+        p_agg_batch = self.SameType_Agg_Bi_RNN(het_node.neighbors_post, "post")
+
         c_agg_batch_2 = torch.cat((c_agg_batch, c_agg_batch), 1).view(len(c_agg_batch), self.embed_d * 2)
         u_agg_batch_2 = torch.cat((c_agg_batch, u_agg_batch), 1).view(len(c_agg_batch), self.embed_d * 2)
         p_agg_batch_2 = torch.cat((c_agg_batch, p_agg_batch), 1).view(len(c_agg_batch), self.embed_d * 2)
@@ -259,60 +292,58 @@ class Het_GNN(nn.Module):
 
         return weight_agg_batch
     
-    def output(self, c_embed_batch, embed_d, outemb_d):
+    def output(self, c_embed_batch):
 
         batch_size = 1
         # make c_embed 3D tensor. Batch_size * 1 * embed_d
-        # c_embed[0] = 1 * embed_d
-        c_embed = c_embed_batch.view(batch_size, 1, embed_d)
-        fc = nn.Linear(embed_d, outemb_d)
-        c_embed_out = fc(c_embed)
-        #print('c_embed_out', c_embed_out)
-        predictions = F.sigmoid(c_embed_out) #log(1/(1+exp(-x)))    sigmoid = 1/(1+exp(-x))
+        c_embed = c_embed_batch.view(batch_size, 1, self.out_embed_d)
+        #fc = nn.Linear(embed_d, outemb_d)
+        #print(c_embed)
+        c_embed_out = self.out_linear(c_embed)
+        #print(c_embed_out)
+        predictions = self.output_act(c_embed_out) #log(1/(1+exp(-x)))    sigmoid = 1/(1+exp(-x))
         return predictions
 
-    def BCELoss(self, predictions, true_label):
-        loss = nn.BCELoss()
-        #print('predictions_shape',predictions.shape)
-        #print('predictions', predictions)
-        predictions = predictions.view(2)
-        if true_label == 1:
-            tensor_label = torch.FloatTensor([1,0])
-        else:
-            tensor_label = torch.FloatTensor([0,1])
-        #print(predictions)
-        loss_sum = loss(predictions, tensor_label)
-        return loss_sum.mean()
+    def forward(self, x):
+        x = self.node_het_agg(het_node = x)
+        x = self.output(c_embed_batch=x)
+        return x
 
 
-net = Het_GNN([300, 512, 12], [500, 500, 500], 100, 1)
-print(net)
-optimizer = optim.Adam(net.parameters(), lr=0.01)
-#print(list(net.parameters()))
+def BCELoss(predictions, true_label):
+    loss = nn.BCELoss()
+    predictions = predictions.view(1)
+    tensor_label = torch.FloatTensor(np.array([true_label]))
+    loss_sum = loss(predictions, tensor_label)
+    return loss_sum
+
+
+net = Het_GNN(input_dim = [300, 512, 12], ini_hidden_dim = [500, 500, 500], hidden_dim=100, batch_size=1, u_input_dim=200, u_hidden_dim=500, u_ini_hidden_dim=500,
+                               u_batch_size=1, u_output_dim=200, u_num_layers=1, u_rnn_type='LSTM', p_input_dim=200,
+                               p_hidden_dim=500, p_ini_hidden_dim=500, p_batch_size=1, p_output_dim=200, p_num_layers=1,
+                                p_rnn_type='LSTM',out_embed_d=200, outemb_d=1)
+optimizer = optim.SGD(net.parameters(), lr=0.05)
 running_loss = 0.0
+net.init_weights()
+print(net)
 print('Start training')
-for epoch in range(10):
+np.random.shuffle(post_nodes)
+for epoch in range(100):
     print('Epoch:', epoch+1)
     c = 0.0
-    for i in range(800):
-        agg = net.node_het_agg(het_node=post_nodes[i], u_input_dim=200, u_hidden_dim=500, u_ini_hidden_dim=500, u_batch_size=1, u_output_dim=200, u_num_layers=1, u_rnn_type='LSTM', p_input_dim=200, p_hidden_dim=500, p_ini_hidden_dim=500, p_batch_size=1, p_output_dim=200, p_num_layers=1, p_rnn_type='LSTM')
-        output = net.output(c_embed_batch=agg, embed_d=200, outemb_d=2)
-        #print(output)
-        _, predicted = torch.max(output, 2)
-        predicted = predicted.view(1)
-        #print(predicted)
-        a = torch.tensor(post_nodes[i].label, dtype=torch.long)
-        #print(a)
-        if predicted == a:
-            c+=1
-        loss = net.BCELoss(predictions=output, true_label=post_nodes[i].label)
+    for i in range(400):
+        optimizer.zero_grad()
+        output = net(post_nodes[i])
+        #print(output.item())
+        if (output.item()>=0.5 and post_nodes[i].label == 1) or (output.item()<0.5 and post_nodes[i].label == 0):
+            c += 1
+        loss = BCELoss(predictions=output, true_label=post_nodes[i].label)
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
-        if i % 200 == 199:  # print every 100 mini-batches
-            #accuracy = c/200
+        if i % 100 == 99:  # print every 100 mini-batches
             print('Epoch: %d, step: %5d, loss: %.3f, acc: %.3f'%
-                  (epoch + 1, i + 1, running_loss / 200, c/200))
+                  (epoch + 1, i + 1, running_loss / 100, c/100))
             running_loss = 0.0
             c = 0.0
 print('Finish training')
