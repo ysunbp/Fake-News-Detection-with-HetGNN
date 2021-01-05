@@ -1,37 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Dec 31 09:43:26 2020
-
-@author: litianle
-"""
-
-"""
-Created on Wed Dec 30 20:58:33 2020
-
-@author: litianle
-"""
-#dimension unify
-#data loader
-#build a file of
-#batch
-
-
-#random walk
-"""
-(p/u)id: (p/u)id (p/u)id (p/u)id (p/u)id (p/u)id...
-"""
-#data file
-#data loader
-
-"""
-node_type id label embedding vector
-neigbors
-post neighbor:
-id embed
-user neighbor
-id embed
-"""
 import numpy as np
 import pandas as pd
 import os
@@ -103,7 +69,6 @@ def data_loader(pathway = 'F:/post_nodes/', node_type = "post"):
         for j in range(len(Lines)):
             if j % 3 == 0:
                 id_ = Lines[j].split()
-                #print(id_)
                 user_id.append(int(id_[0]))
                 embed = []
             if j % 3 == 1 or j % 3 == 2:
@@ -120,16 +85,10 @@ post_nodes = data_loader(pathway='F:/FYP_data/normalized_post_nodes/', node_type
 user_nodes = data_loader(pathway='F:/FYP_data/normalized_user_nodes/', node_type="user")
 post_emb_dict = {}
 user_emb_dict = {}
-#content_dict = {}
 for user in user_nodes:
     user_emb_dict[user.node_id] = user.emb
 for post in post_nodes:
     post_emb_dict[post.node_id] = post.emb
-
-#print(post_nodes[5].emb)
-
-#def Bi_RNN(neighbor_id, node_type, post_emb_dict, user_emb_dict):
-
 
 class Het_GNN(nn.Module):
     #features: list of HetNode class
@@ -194,7 +153,6 @@ class Het_GNN(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Linear) or isinstance(m, nn.Parameter):
                 nn.init.xavier_normal_(m.weight.data)
-                # nn.init.normal_(m.weight.data)
                 m.bias.data.fill_(0.1)
 
     def Bi_RNN(self, neighbor_id, node_type, post_emb_dict, user_emb_dict):
@@ -231,14 +189,11 @@ class Het_GNN(nn.Module):
             linear_input_other = linear_input_other.view(linear_input_other.shape[0], 1, linear_input_other.shape[1])
             lstm_out_text, self.hidden_text = self.lstm_text(linear_input_text)
             lstm_out_other, self.hidden_other = self.lstm_other(linear_input_other)
-            #print('lstm_out_other', lstm_out_other.shape)
-            #print('lstm_out_text', lstm_out_text.shape)
             concate = torch.cat((lstm_out_text, lstm_out_other), 1)
-            #print('concate', concate.shape)
 
         # mean pooling all the states
         mean_pooling = torch.mean(concate, 1)
-        #print('mean_pooling',mean_pooling.shape)
+
         for i in neighbor_id:
             if ("post", i) in self.content_dict:
                 mean_pooling = torch.cat(mean_pooling, self.content_dict[i], dim=0)
@@ -297,10 +252,7 @@ class Het_GNN(nn.Module):
         batch_size = 1
         # make c_embed 3D tensor. Batch_size * 1 * embed_d
         c_embed = c_embed_batch.view(batch_size, 1, self.out_embed_d)
-        #fc = nn.Linear(embed_d, outemb_d)
-        #print(c_embed)
         c_embed_out = self.out_linear(c_embed)
-        #print(c_embed_out)
         predictions = self.output_act(c_embed_out) #log(1/(1+exp(-x)))    sigmoid = 1/(1+exp(-x))
         return predictions
 
@@ -334,7 +286,6 @@ for epoch in range(100):
     for i in range(400):
         optimizer.zero_grad()
         output = net(post_nodes[i])
-        #print(output.item())
         if (output.item()>=0.5 and post_nodes[i].label == 1) or (output.item()<0.5 and post_nodes[i].label == 0):
             c += 1
         loss = BCELoss(predictions=output, true_label=post_nodes[i].label)
