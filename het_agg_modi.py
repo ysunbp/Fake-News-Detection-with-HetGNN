@@ -1,21 +1,13 @@
 import numpy as np
-import pandas as pd
-import os
 import torch
 import torch.nn as nn
-import time
-import copy
-from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 from sklearn.metrics import f1_score
 from sklearn.model_selection import KFold
-device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.optim as optim
 
-
-
-
+device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 class Het_Node():
     def __init__(self, node_type, node_id, embed, neighbor_list_post = [], neighbor_list_user = [], label = None):
@@ -140,10 +132,12 @@ class Het_GNN(nn.Module):
         self.u_lstm = eval('nn.' + self.u_rnn_type)(self.u_ini_hidden_dim, self.u_hidden_dim, self.u_num_layers,
                                                     batch_first=True, bidirectional=True)
         self.u_linear = nn.Linear(self.u_hidden_dim * 2, self.u_output_dim)
+        self.u_dropout = nn.Dropout(p=0.5)
         self.p_init_linear = nn.Linear(self.p_input_dim, self.p_ini_hidden_dim)
         self.p_lstm = eval('nn.' + self.p_rnn_type)(self.p_ini_hidden_dim, self.p_hidden_dim, self.p_num_layers,
                                                     batch_first=True, bidirectional=True)
         self.p_linear = nn.Linear(self.p_hidden_dim * 2, self.p_output_dim)
+        self.p_dropout = nn.Dropout(p=0.5)
         self.act = nn.LeakyReLU()
         self.softmax = nn.Softmax(dim=1)
         self.out_linear = nn.Linear(self.out_embed_d, self.outemb_d)
@@ -200,8 +194,7 @@ class Het_GNN(nn.Module):
         for i in range(len(new_id)):
             self.content_dict[i] = mean_pooling[i]
         return mean_pooling
-    
-    
+
     #features: list of [(id)]
     def SameType_Agg_Bi_RNN(self, neighbor_id, node_type):
         content_embedings = self.Bi_RNN(neighbor_id, node_type, post_emb_dict, user_emb_dict)
@@ -210,6 +203,7 @@ class Het_GNN(nn.Module):
             linear_input = linear_input.view(linear_input.shape[0],1,linear_input.shape[1])
             lstm_out, hidden = self.p_lstm(linear_input)
             last_state = self.p_linear(lstm_out)
+            last_state = self.p_dropout(last_state)
             mean_pooling = torch.mean(last_state, 0)
             return mean_pooling
         else:
@@ -217,11 +211,10 @@ class Het_GNN(nn.Module):
             linear_input = linear_input.view(linear_input.shape[0], 1, linear_input.shape[1])
             lstm_out, hidden = self.u_lstm(linear_input)
             last_state = self.u_linear(lstm_out)
+            last_state = self.u_dropout(last_state)
             mean_pooling = torch.mean(last_state, 0)
             return mean_pooling
-    
-    
-   
+
     def node_het_agg(self, het_node): #heterogeneous neighbor aggregation
 
         #attention module
@@ -274,28 +267,78 @@ net = Het_GNN(input_dim = [300, 512, 12], ini_hidden_dim = [500, 500, 500], hidd
                                u_batch_size=1, u_output_dim=200, u_num_layers=1, u_rnn_type='LSTM', p_input_dim=200,
                                p_hidden_dim=500, p_ini_hidden_dim=500, p_batch_size=1, p_output_dim=200, p_num_layers=1,
                                 p_rnn_type='LSTM',out_embed_d=200, outemb_d=1)
-optimizer = optim.SGD(net.parameters(), lr=0.05)
-running_loss = 0.0
 net.init_weights()
 print(net)
+optimizer = optim.SGD(net.parameters(), lr=0.05)
+running_loss = 0.0
+val_loss = 0.0
+test_loss = 0.0
+num_epoch = 5
 print('Start training')
+
+# Shuffle the order in post nodes
 np.random.shuffle(post_nodes)
-for epoch in range(100):
+
+# K-fold validation index
+train_index = []
+val_index = []
+kfold = KFold(10, True, 1)
+for train, val in kfold.split(post_nodes[:4300]):
+    train_index.append(train)
+    val_index.append(val)
+
+# split test set first
+test_set = post_nodes[4300:]
+
+for epoch in range(num_epoch):
     print('Epoch:', epoch+1)
     c = 0.0
-    for i in range(400):
+    running_loss = 0.0
+    v = 0.0
+
+    # generate train and test set for current epoch
+    train_set = []
+    val_set = []
+    for t_index in train_index[epoch]:
+        train_set.append(post_nodes[t_index])
+    for v_index in val_index[epoch]:
+        val_set.append(post_nodes[v_index])
+    for i in range(len(train_set)):
         optimizer.zero_grad()
-        output = net(post_nodes[i])
-        if (output.item()>=0.5 and post_nodes[i].label == 1) or (output.item()<0.5 and post_nodes[i].label == 0):
+        output = net(train_set[i])
+        if (output.item() >= 0.5 and train_set[i].label == 1) or (output.item() < 0.5 and train_set[i].label == 0):
             c += 1
-        loss = BCELoss(predictions=output, true_label=post_nodes[i].label)
+        loss = BCELoss(predictions=output, true_label=train_set[i].label)
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
         if i % 100 == 99:  # print every 100 mini-batches
-            print('Epoch: %d, step: %5d, loss: %.3f, acc: %.3f'%
+            print('Epoch: %d, step: %5d, loss: %.4f, acc: %.4f'%
                   (epoch + 1, i + 1, running_loss / 100, c/100))
             running_loss = 0.0
             c = 0.0
+    for j in range(len(val_set)):
+        output = net(val_set[j])
+        if (output.item() >= 0.5 and val_set[j].label == 1) or (output.item() < 0.5 and val_set[j].label == 0):
+            v += 1
+        vloss = BCELoss(predictions=output, true_label=val_set[j].label)
+        val_loss += vloss.item()
+    print('Validation loss: %.4f, Validation accuracy: %.4f'% (val_loss/len(val_set), v/len(val_set)))
+    v = 0.0
+    val_loss = 0.0
 print('Finish training')
+
+print('==============================================================')
+
+print('Start testing')
+t = 0.0
+for k in range(len(test_set)):
+    output = net(test_set[k])
+    if (output.item() >= 0.5 and test_set[k].label == 1) or (output.item() < 0.5 and test_set[k].label == 0):
+        t += 1
+    tloss = BCELoss(predictions=output, true_label=test_set[k].label)
+    test_loss += tloss.item()
+
+print('Test loss: %.4f, Test accuracy: %.4f'% (test_loss/len(test_set), t/len(test_set)))
+print('Finish testing')
 
