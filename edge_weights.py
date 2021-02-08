@@ -1,6 +1,11 @@
 """
 To avoid being killed, process graphs one by one. Deduplicate afterwards.
 To avoid bugs, all ids must be int. Check it.
+
+User-user edge weights file sizes sum to 333G, which can't be read at once
+in the 30G RAM obviously. => Solution:
+1. Streamlined, e.g. graph generator by networkX
+2. Set cutoff to reduce edges
 """
 import json
 import os
@@ -45,11 +50,18 @@ def _process_some_user_files(
         std,
         process_number):
     def _read_users(filename):
-        users = dict()
         with open(os.path.join(user_features_dir, filename), 'r') as fin:
             lines = fin.readlines()
+        
+        segs = lines[0].strip().split()
+        id = int(segs[0])
+        vec = np.array([float(i) for i in segs[1:]])
+        vec = ((vec - mean) / std) if standardize else vec
+        author = Node(id, vec)
+
+        users = dict()
         generator = tqdm(
-            lines, desc='read users') if process_number == 0 else lines
+            lines[1:], desc='read users') if process_number == 0 else lines[1:]
         for line in generator:
             segs = line.strip().split()
             id = int(segs[0])
@@ -58,8 +70,10 @@ def _process_some_user_files(
             vec = np.array([float(i) for i in segs[1:]])
             vec = ((vec - mean) / std) if standardize else vec
             users[id] = Node(id, vec)
-        for u1 in users.keys():
-            users[u1].neighbors = set([u2 for u2 in users.keys() if u1 != u2])
+        author.neighbors = set([u2 for u2 in users.keys() if author.id != u2])
+        for u2 in users.keys():
+            users[u2].neighbors = {author.id}
+        users[author.id] = author
         return users
 
     sorted_dir_list = [(fname, len(open(os.path.join(user_features_dir, fname), 'r').readlines()))
@@ -100,7 +114,8 @@ def process_users(n_processes=1):
     dir_list = os.listdir(user_features_dir)
     if not os.path.isdir(user_nodes_out_dir):
         os.mkdir(user_nodes_out_dir)
-    finished_dir_list = os.listdir(user_nodes_out_dir)
+    # finished_dir_list = os.listdir(user_nodes_out_dir)
+    finished_dir_list = []
 
     random.shuffle(dir_list)
     n_files = (len(dir_list) + n_processes - 1) // n_processes
@@ -113,6 +128,7 @@ def process_users(n_processes=1):
         ps.append(p)
     for p in ps:
         p.join()
+    print("all users processed")
 
 
 def process_posts():
