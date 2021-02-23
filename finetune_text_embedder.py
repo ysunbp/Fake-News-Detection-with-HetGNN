@@ -13,8 +13,8 @@ def convert_weibo_text_into_line_by_line(weibo_dir, line_by_line_f, mini_size=fl
         with open(os.path.join(weibo_dir, fname), 'r') as fin:
             posts = json.load(fin)
         text_list.append(posts[0]["text"])
-        text_list.extend([post["user_description"]
-                          for post in posts])  # 136 MB
+        # text_list.extend([post["user_description"]
+                        #   for post in posts])  # 136 MB
         if len(text_list) > mini_size:
             break
     text_list = [t for t in text_list if len(t) > 0]
@@ -24,14 +24,15 @@ def convert_weibo_text_into_line_by_line(weibo_dir, line_by_line_f, mini_size=fl
 
 if __name__ == '__main__':
 
-    line_by_line_f = '/rwproject/kdd-db/20-rayw1/data/line_by_line.txt'
+    line_by_line_f = '/rwproject/kdd-db/20-rayw1/data/line_by_line_post.txt'
 
     model_in = 'xlm-roberta-base'
-    config_tag = ''
+    config_tag = '-post'
     model_out = '/rwproject/kdd-db/20-rayw1/language_models/' + model_in + config_tag
+    output_dir = '/rwproject/kdd-db/20-rayw1/language_models/output' + config_tag
 
-    # convert_weibo_text_into_line_by_line(
-    #     weibo_dir='/rwproject/kdd-db/20-rayw1/rumdect/weibo_json', line_by_line_f=line_by_line_f)
+    convert_weibo_text_into_line_by_line(
+        weibo_dir='/rwproject/kdd-db/20-rayw1/rumdect/weibo_json', line_by_line_f=line_by_line_f)
 
     print('Loading models...')
     tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')
@@ -49,7 +50,7 @@ if __name__ == '__main__':
     )
 
     training_args = TrainingArguments(
-        output_dir='/rwproject/kdd-db/20-rayw1/language_models/output',
+        output_dir=output_dir,
         overwrite_output_dir=True,
         num_train_epochs=3,
         per_device_train_batch_size=4,  # 8 => CUDA out of memory on raymond's server
