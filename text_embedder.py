@@ -1,7 +1,7 @@
-from typing import List, Tuple, Union, Optional
+from typing import List, Tuple, Optional
 import torch
 import os
-from transformers import XLMRobertaForMaskedLM, XLMRobertaTokenizer
+from transformers import XLMRobertaModel, XLMRobertaTokenizer
 
 class TextEmbedder(torch.nn.Module):
     """An embedder for string-to-2D-Tensor conversion with XLM-RoBERTa or word2vec"""
@@ -31,7 +31,7 @@ class TextEmbedder(torch.nn.Module):
         else:
             assert model_path in ['xlm-roberta-base', 'xlm-roberta-large'] or os.path.isdir(model_path)
             self.tokenizer = XLMRobertaTokenizer.from_pretrained(model_name, model_max_length=self.max_seq_len)
-            self.model = XLMRobertaForMaskedLM.from_pretrained(model_path, return_dict=True)
+            self.model = XLMRobertaModel.from_pretrained(model_path, return_dict=True)
         print('TextEmbedder: Finished loading model {}'.format(model_name))
 
     def forward(self, text_list: List[str], return_tokens: Optional[bool] = False) -> Tuple[torch.Tensor, List[List[str]]]:
@@ -59,7 +59,7 @@ class TextEmbedder(torch.nn.Module):
             return (outputs, tokens) if return_tokens else outputs
         else:
             inputs = self.tokenizer(text_list, return_tensors="pt", max_length=self.max_seq_len, padding='max_length', truncation=True)
-            outputs = self.model(**inputs, output_hidden_states=True)['hidden_states'][-1]
+            outputs = self.model(**inputs)
             if return_tokens:
                 tokens = [self.tokenizer.convert_ids_to_tokens(ids) for ids in inputs['input_ids']]
                 return outputs, tokens
@@ -92,12 +92,14 @@ class TextEmbedder(torch.nn.Module):
 if __name__ == '__main__':
     text_list = ['酷！艾薇儿现场超强翻唱Ke$ha神曲TiK ToK！超爱这个编曲！ http://t.cn/htjA04', '转发微博。']
     word2vec_path = '/rwproject/kdd-db/shsuaa/fyp/word2vec/sgns.weibo.bigram-char'
-    finetuned_transformer_path = '/rwproject/kdd-db/20-rayw1/language_models/xlm-roberta-base'
+    # finetuned_transformer_path = '/rwproject/kdd-db/20-rayw1/language_models/xlm-roberta-base'
+    finetuned_transformer_path = '/rwproject/kdd-db/20-rayw1/language_models/xlm-roberta-base-post'
     max_seq_len = 49
 
     embedder = TextEmbedder(max_seq_len, 'xlm-roberta-base', finetuned_transformer_path)
     outputs, tokens = embedder(text_list, return_tokens=True)
-    print(outputs.shape)
+    print(outputs.last_hidden_state.shape)
+    print(outputs.pooler_output.shape)
     print(tokens)
 
     embedder = TextEmbedder(max_seq_len, 'word2vec', word2vec_path)
