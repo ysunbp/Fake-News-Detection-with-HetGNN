@@ -58,7 +58,7 @@ def worker(pathes: List[str], process_idx: int, err_res_ids: Set[str], return_di
 
         try:
             response = None
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=60)
             if response and response.status_code // 100 == 2:  # 200-299: successful responses
                 file = open(out_path, "wb")
                 file.write(response.content)
