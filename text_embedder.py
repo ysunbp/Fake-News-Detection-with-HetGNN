@@ -1,7 +1,14 @@
+"""
+Requirements for Twitter (https://github.com/VinAIResearch/BERTweet)
+    pip3 install --user emoji
+    transformers v4.x+
+Tweets model from https://arxiv.org/pdf/2005.10200.pdf
+News model from https://huggingface.co/mrm8488/t5-base-finetuned-summarize-news
+"""
 from typing import List, Tuple, Optional
 import torch
 import os
-from transformers import XLMRobertaModel, XLMRobertaTokenizer
+from transformers import XLMRobertaModel, XLMRobertaTokenizer, AutoModel, AutoTokenizer
 
 class TextEmbedder(torch.nn.Module):
     """An embedder for string-to-2D-Tensor conversion with XLM-RoBERTa or word2vec"""
@@ -14,24 +21,31 @@ class TextEmbedder(torch.nn.Module):
         max_len : int
 
         model_name : str
-            The name of the model, should be one of 'word2vec', 'xlm-roberta-base', 'xlm-roberta-large'
+            The name of the model, should be one of 'word2vec', 'xlm-roberta-base', 'xlm-roberta-large', 'vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news'
         model_path : str, optional
             The path to the w2v file / finetuned Transformer model path. Required for w2v.
         """
         
-        assert model_name in ['word2vec', 'xlm-roberta-base', 'xlm-roberta-large']
+        assert model_name in ['word2vec', 'xlm-roberta-base', 'xlm-roberta-large', 'vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news']
         self.max_seq_len = max_seq_len
         self.model_name = model_name
-        model_path = model_name if model_path == '' else model_path
+        if model_path == '':
+            model_path = model_name  # TODO check if the 
         print('TextEmbedder: Loading model {} ({})'.format(model_name, model_path))
         if model_name == 'word2vec':
             assert os.path.isfile(model_path)
             self.tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base', model_max_length=self.max_seq_len+1)
             self._load_weibo_w2v(model_path)
+            self.embed_dim = 300
+        elif model_name in ['vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news']:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, model_max_length=self.max_seq_len)
+            self.model = AutoModel.from_pretrained(model_path, return_dict=True).cuda()  # T5 for news doesn't have 'add_pooling_layer' option
+            self.embed_dim = 768
         else:
             assert model_path in ['xlm-roberta-base', 'xlm-roberta-large'] or os.path.isdir(model_path)
             self.tokenizer = XLMRobertaTokenizer.from_pretrained(model_name, model_max_length=self.max_seq_len)
-            self.model = XLMRobertaModel.from_pretrained(model_path, return_dict=True)
+            self.model = XLMRobertaModel.from_pretrained(model_path, return_dict=True, add_pooling_layer=False).cuda()
+            self.embed_dim = 768
         print('TextEmbedder: Finished loading model {}'.format(model_name))
 
     def forward(self, text_list: List[str], return_tokens: Optional[bool] = False) -> Tuple[torch.Tensor, List[List[str]]]:
@@ -55,17 +69,36 @@ class TextEmbedder(torch.nn.Module):
         if self.model_name == 'word2vec':
             tokens = [self.tokenizer.tokenize(text)[1: 1 + self.max_seq_len] for text in text_list]
             tokens = [[token.replace('▁', '') for token in doc] for doc in tokens]  # NOTE '▁' and '_' (underscore) are different
-            outputs = self._w2v_embed(tokens)
-            return (outputs, tokens) if return_tokens else outputs
+            oututs = self._w2v_embed(tokens)
         else:
             inputs = self.tokenizer(text_list, return_tensors="pt", max_length=self.max_seq_len, padding='max_length', truncation=True)
-            outputs = self.model(**inputs)
+            inputs = {k : v.cuda() for k, v in inputs.items()}
+            outputs = self.model(**inputs)['last_hidden_state'].detach().cpu()
             if return_tokens:
                 tokens = [self.tokenizer.convert_ids_to_tokens(ids) for ids in inputs['input_ids']]
-                return outputs, tokens
-            else:
-                return outputs
-        
+        assert outputs.shape == (len(text_list), self.max_seq_len, self.embed_dim)
+        return (outputs, tokens) if return_tokens else outputs
+
+    def compute_seq_len_statistics(text_list: List[str], config):
+        from tqdm import tqdm
+        import numpy as np
+        import json
+        tokenizer = AutoTokenizer.from_pretrained(config['model name'])
+        bsz = config['batch size']
+        n_batches = (len(text_list) + bsz - 1) // bsz
+        counts = []
+        for i in tqdm(range(n_batches)):
+            mn, mx = i * bsz, min(len(text_list), (i + 1) * bsz)
+            inputs = tokenizer(text_list[mn:mx])['input_ids']
+            counts.extend([len(i) for i in inputs])
+        stats = {
+            'mean' : np.mean(counts),
+            'std' : np.std(counts),
+            'max' : max(counts),
+            'min' : min(counts),
+        }
+        print(json.dumps({'tweet_stat' : stats}))
+        return stats
 
     def _load_weibo_w2v(self, model_path):
         self.w2v = dict()
@@ -90,19 +123,30 @@ class TextEmbedder(torch.nn.Module):
 
 
 if __name__ == '__main__':
-    text_list = ['酷！艾薇儿现场超强翻唱Ke$ha神曲TiK ToK！超爱这个编曲！ http://t.cn/htjA04', '转发微博。']
+    text_list_weibo = ['酷！艾薇儿现场超强翻唱Ke$ha神曲TiK ToK！超爱这个编曲！ http://t.cn/htjA04', '转发微博。']
+    text_list_fnn_tweet = ["@Calila1988 No. I hate Brad Pitt. B.J. Novak is way cooler. I know this because he is Huma's secret lover.", "I've always loved Brad Pitt, he's my secret lover ;) Sorry Angelina. No longer Brangelina, now i'ts Bralde ;) hahaha"]
+    text_list_fnn_news = ["Star magazine has released an explosive report today that claims a woman has come forward to claim she is pregnant with Brad Pitt's child.\n\nThe 54-year-old actor has allegedly learnt that a former 'twenty-something' fling from earlier this year, who wishes to remain anonymous, has come forward to the publication.\n\n'This will be an absolute nightmare for Bard if her claims are true,' an insider spilled. 'After all the drama he's been through over the past two years, he's desperate to keep his life as trouble and scandal free as possible.'\n\nAccording to Star's bombshell claims, the mystery woman is willing to undergo a paternity test and use the results to effectively tell Brad, 'I've got the DNA tests to prove it!'","Virginia Republican Wants Schools To Check Children's Genitals Before Using Bathroom"]
     word2vec_path = '/rwproject/kdd-db/shsuaa/fyp/word2vec/sgns.weibo.bigram-char'
     # finetuned_transformer_path = '/rwproject/kdd-db/20-rayw1/language_models/xlm-roberta-base'
     finetuned_transformer_path = '/rwproject/kdd-db/20-rayw1/language_models/xlm-roberta-base-post'
     max_seq_len = 49
 
-    embedder = TextEmbedder(max_seq_len, 'xlm-roberta-base', finetuned_transformer_path)
-    outputs, tokens = embedder(text_list, return_tokens=True)
-    print(outputs.last_hidden_state.shape)
-    print(outputs.pooler_output.shape)
-    print(tokens)
+    # embedder = TextEmbedder(max_seq_len, 'xlm-roberta-base', finetuned_transformer_path)
+    # outputs, tokens = embedder(text_list_weibo, return_tokens=True)
+    # print(tokens)
+    # print(outputs.shape)
 
-    embedder = TextEmbedder(max_seq_len, 'word2vec', word2vec_path)
-    outputs, tokens = embedder(text_list, return_tokens=True)
-    print(outputs.shape)
+    # embedder = TextEmbedder(max_seq_len, 'word2vec', word2vec_path)
+    # outputs, tokens = embedder(text_list_weibo, return_tokens=True)
+    # print(tokens)
+    # print(outputs.shape)
+
+    embedder = TextEmbedder(max_seq_len, 'vinai/bertweet-base')
+    outputs, tokens = embedder(text_list_fnn_tweet, return_tokens=True)
     print(tokens)
+    print(outputs.shape)
+
+    embedder = TextEmbedder(max_seq_len, 'mrm8488/t5-base-finetuned-summarize-news')
+    outputs, tokens = embedder(text_list_fnn_news, return_tokens=True)
+    print(tokens)
+    print(outputs.shape)
