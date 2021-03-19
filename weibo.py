@@ -2,7 +2,6 @@
 import os
 import time
 from multiprocessing import Process
-from transformers import XLMRobertaTokenizer
 
 import torch
 from tqdm import tqdm
@@ -13,7 +12,7 @@ from tqdm import tqdm
 ############################################################    
 
 def save_embed_file(dir, tid, feature):
-    f = open('{}{}.txt'.format(dir, tid), 'w')
+    f = open('{}/{}.txt'.format(dir, tid), 'w')
     f.writelines(' '.join(['{:.8f}'.format(v) for v in feature]) + '\n')
     f.close()
 
@@ -108,7 +107,14 @@ def multiprocess_embed_w2v(num_processes, tids, texts, w2v_path, output_dir):
 ############################################################
 #                Embed text - Transformer                  #
 ############################################################    
-def embed_text_list_transformer_save(id_list, text_list, output_dir, process_idx = 0):
+def save_embed_worker(id_list, feature_list, output_dir, process_idx = 0):
+    print("Process {} says hi!".format(process_idx))
+    it = tqdm(zip(id_list, feature_list), desc='save embed') if process_idx == 0 else zip(id_list, feature_list)
+    for tid, feature in it:
+        save_embed_file(output_dir, tid, feature)
+    print("Process {} says bye!".format(process_idx))
+
+def multiprocess_embed_transformer(num_processes, tids, texts, output_dir, transformer_path):
     """
     Use a transformer to embed some strings and save them in dir
 
@@ -121,65 +127,42 @@ def embed_text_list_transformer_save(id_list, text_list, output_dir, process_idx
         2. When you run this function for the first time, it
            downloads the model, which takes 30+ mins over wifi.
     Parameters: 
-        id_list: list(str), the list of the id of the text
-        text_list: list(str), the list of text to embed
+        num_processes: int, # processes used to save embed files
+        tids: list(str), the list of the id of the text
+        texts: list(str), the list of text to embed
         output_dir: a dir path to save the embeddings
+        transformer_path: a tranformer name or a path to the finetuned transformer
     Usage:
         text_1 = "公安内部资料显示，她的户口是由山东青岛迁出，迁往地是日本的大阪。评：古人云“苟富贵，无相忘”，现在倒好，就连张海迪这样真正是靠全党、全国人民无数双手捧起来、曾经是一代人心中楷模和英雄偶像的残疾人，也在当高官、享厚禄后，拍屁股外逃了！"
         text_2 = "#来论#【救的不只是一个日本人】中国海军在也门撤侨行动中帮助一名日本游客乘中国军舰脱离险地。中国军人该不该救那个日本国民？当然应该。漠视一个无辜的、面临死亡威胁的生命，会让我们堕落到幽暗人性的深渊。我们需要告别被害者心态，而应慢慢具备正常大国国民的平和心态。http://t.cn/RAidbJu"
         
         id_list = ['0', '1']
         text_list = [text_1, text_2]
-        embed_text_list(id_list, text_list, 'data/weibo/posts')
+        multiprocess_embed_transformer(8, id_list, text_list, 'data/weibo/posts', 'xlm-roberta-base')
     """
-    from transformers import XLMRobertaModel, XLMRobertaTokenizer
-
-    print("Process {} says hi!".format(process_idx))
-
-    batch_size = 32
-    hidden_size = 768  # const, not var. set by RoBERTa
-
-    # Load models
-    tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base')  # resume_download=True if needed
-    model = XLMRobertaModel.from_pretrained('xlm-roberta-base', return_dict=True)  # same
-
-    # Batchify
-    n = len(text_list) // batch_size
-    it = tqdm(range(n), desc='Process 0 progress') if process_idx == 0 else range(n)
-    for i in it:
-        inputs = tokenizer(text_list[i * batch_size : (i + 1) * batch_size], return_tensors="pt", padding=True, truncation=True)
-        outputs = model(**inputs)  # (batch_size, seq_len, embed_dim)
-
-        # pooler_output (torch.FloatTensor of shape (batch_size, hidden_size)) – Last layer hidden-state of the first token of the sequence (classification token) further processed by a Linear layer and a Tanh activation function. The Linear layer weights are trained from the next sentence prediction (classification) objective during pretraining. https://huggingface.co/transformers/model_doc/xlmroberta.html#transformers.XLMRobertaModel.forward
-        features = outputs.pooler_output
-
-        tids = id_list[i * batch_size : (i + 1) * batch_size]
-        for tid, feature in zip(tids, features):
-            save_embed_file(output_dir, tid, feature)
-
-    # Last batch
-    if len(text_list) % batch_size != 0:
-        inputs = tokenizer(text_list[n * batch_size:], return_tensors="pt", padding=True, truncation=True)
-        outputs = model(**inputs)
-        features = outputs.pooler_output
-        tids = id_list[n * batch_size:]
-        for tid, feature in zip(tids, features):
-            save_embed_file(output_dir, tid, feature)
-
-    print("Process {} says bye!".format(process_idx))
-
-def multiprocess_embed_transformer(num_processes, tids, texts, output_dir):
-    print("multiprocess_embed_transformer starts.")
+    print("multiprocess_embed_transformer starts.")    
     start = time.time()
 
+    # Embed with GPU; single-process; batchified
+    from text_embedder import TextEmbedder
+    batch_size = 32
+    embedder = TextEmbedder(512, 'xlm-roberta-base', transformer_path)  # 512: max num tokens for XLM-R
+    features = torch.zeros((len(tids), embedder.embed_dim))
+    n = (len(texts) + batch_size - 1) // batch_size
+    for i in tqdm(range(n), desc='embed'):
+        mn, mx = i * batch_size, min((i + 1) * batch_size, len(texts))
+        outputs = embedder(texts[mn:mx])  # (batch_size, seq_len, embed_dim)
+        features[mn:mx] = outputs['last_hidden_state'][:, 0, :].squeeze(1)  # (batch_size, embed_dim)
+
+    # Save model with CPU, multi-process
     n = (len(tids) + num_processes - 1) // num_processes  # The number of units in each process
     processes = []
     for i in range(num_processes):
         end = min((i+1) * n, len(tids))
         processes.append(
-            Process(target=embed_text_list_transformer_save, args=(
+            Process(target=save_embed_worker, args=(
                 tids[i * n : end], 
-                texts[i * n : end], 
+                features[i * n : end], 
                 output_dir,
                 i))
         )
@@ -361,11 +344,12 @@ def get_weibo_text(weibo_dir, users_involved_path, small_subset=-1):
 #      Load text -> embed -> cluster -> split -> save      #
 ############################################################
 if __name__ == "__main__":
-    # weibo_dir = "rumdect/Weibo/"
-    weibo_dir = '../rumdect/weibo_json'
-    users_involved_path = "users_involved.txt"
+    weibo_dir = '/rwproject/kdd-db/20-rayw1/rumdect/weibo_json'
+    # users_involved_path = "users_involved.txt"
+    users_involved_path = "/rwproject/kdd-db/20-rayw1/fyp_code/random_walk_gcn/5p100u/new_users.txt"
     # w2v_path = "word2vec/sgns.weibo.bigram-char"
-    output_dir = "../data/weibo/xlm-roberta-base/"
+    transformer_path = '/rwproject/kdd-db/20-rayw1/language_models/xlm-roberta-base'
+    output_dir = "../data/weibo/xlm-roberta-base-5p100u/"
     # output_dir = "data/weibo/"
     output_dirs = [
         output_dir, 
@@ -397,7 +381,7 @@ if __name__ == "__main__":
     # multiprocess_embed_transformer(num_processes, news_ids, news_text, output_dirs[1])
     
     print("Embed users Transformer: {} processes".format(num_processes))
-    multiprocess_embed_transformer(num_processes, user_ids, user_text, output_dirs[2])
+    multiprocess_embed_transformer(num_processes, user_ids, user_text, output_dirs[2], transformer_path)
 
 
     ############################################################

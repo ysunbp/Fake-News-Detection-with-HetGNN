@@ -13,7 +13,7 @@ from transformers import XLMRobertaModel, XLMRobertaTokenizer, AutoModel, AutoTo
 class TextEmbedder(torch.nn.Module):
     """An embedder for string-to-2D-Tensor conversion with XLM-RoBERTa or word2vec"""
 
-    def __init__(self, max_seq_len : int, model_name: str, model_path: Optional[str] = ''):
+    def __init__(self, max_seq_len : int, model_name: str, model_path: Optional[str] = '', device: Optional[str] = 'cpu'):
         super(TextEmbedder, self).__init__()
         """
         Parameters
@@ -29,6 +29,7 @@ class TextEmbedder(torch.nn.Module):
         assert model_name in ['word2vec', 'xlm-roberta-base', 'xlm-roberta-large', 'vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news']
         self.max_seq_len = max_seq_len
         self.model_name = model_name
+        self.device = torch.device(device)
         if model_path == '':
             model_path = model_name  # TODO check if the 
         print('TextEmbedder: Loading model {} ({})'.format(model_name, model_path))
@@ -39,12 +40,12 @@ class TextEmbedder(torch.nn.Module):
             self.embed_dim = 300
         elif model_name in ['vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news']:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, model_max_length=self.max_seq_len)
-            self.model = AutoModel.from_pretrained(model_path, return_dict=True).cuda()  # T5 for news doesn't have 'add_pooling_layer' option
+            self.model = AutoModel.from_pretrained(model_path, return_dict=True).to(self.device)  # T5 for news doesn't have 'add_pooling_layer' option
             self.embed_dim = 768
         else:
             assert model_path in ['xlm-roberta-base', 'xlm-roberta-large'] or os.path.isdir(model_path)
             self.tokenizer = XLMRobertaTokenizer.from_pretrained(model_name, model_max_length=self.max_seq_len)
-            self.model = XLMRobertaModel.from_pretrained(model_path, return_dict=True, add_pooling_layer=False).cuda()
+            self.model = XLMRobertaModel.from_pretrained(model_path, return_dict=True, add_pooling_layer=False).to(self.device)
             self.embed_dim = 768
         print('TextEmbedder: Finished loading model {}'.format(model_name))
 
@@ -72,7 +73,7 @@ class TextEmbedder(torch.nn.Module):
             oututs = self._w2v_embed(tokens)
         else:
             inputs = self.tokenizer(text_list, return_tensors="pt", max_length=self.max_seq_len, padding='max_length', truncation=True)
-            inputs = {k : v.cuda() for k, v in inputs.items()}
+            inputs = {k : v.to(self.device) for k, v in inputs.items()}
             outputs = self.model(**inputs)['last_hidden_state'].detach().cpu()
             if return_tokens:
                 tokens = [self.tokenizer.convert_ids_to_tokens(ids) for ids in inputs['input_ids']]

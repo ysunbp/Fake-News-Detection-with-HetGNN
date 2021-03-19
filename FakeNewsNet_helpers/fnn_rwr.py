@@ -5,7 +5,7 @@
 import random
 from tqdm import tqdm
 import os
-from multiprocessing import Process, Manager
+from multiprocessing import Process, Manager, Pool
 
 # overall
 num_process = 16
@@ -13,8 +13,8 @@ num_process = 16
 # input
 in_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/graph_def'
 edge_dirs = [
-    os.path.join(in_dir, 'politifact', 'fake'),
-    os.path.join(in_dir, 'politifact', 'real'),
+    # os.path.join(in_dir, 'politifact', 'fake'),
+    # os.path.join(in_dir, 'politifact', 'real'),
     os.path.join(in_dir, 'gossipcop', 'fake'),
     os.path.join(in_dir, 'gossipcop', 'real'),
 ]
@@ -47,26 +47,31 @@ max_uniq_neigh = {
 }
 
 # output
-configuration_tag = 'fnn_test' + \
+configuration_tag = 'fnn_gossipcop_' + \
     '_'.join([f'{k}{max_uniq_neigh[k]}' for k in node_types])  ##########################################
 output_dir = f"rwr_results/{configuration_tag}"
 
-def update_involved_recursively(nei_list, rank):
+# global
+adj_list = dict()  # IN  adj_list['p123'] = ['u456', 'n789', ...]
+
+def update_involved_recursively(nei_list, rank = -1):
     if len(nei_list) == 0:
         return {t : set() for t in node_types}
+    nodes = list(nei_list.keys())
     if rank == 0:
         pbar = tqdm(total=len(nei_list) * 2 - 1, desc='update_involved')
-    def recursion(nei_list, nodes):
+    def recursion(nei_list, lidx, ridx):
         # speedup intuition: ∑_{i=1...2^3} log(i) < ∑_{i=0...k} 2^i * log(2^{k-i})
-        # nei_list is pass-by-ref, but nodes is copied in every level
+        # nei_list is pass-by-ref; nodes are in [lidx, ridx)
         involved = dict()
-        if len(nodes) == 1:
-            for t, nl in nei_list[nodes[0]].items():
+        if ridx - lidx == 1:
+            for t, nl in nei_list[nodes[lidx]].items():
                 involved[t] = set(nl)
+            involved[nodes[lidx][0]].add(nodes[lidx])
         else:
-            m = len(nodes) // 2
-            l = recursion(nei_list, nodes[:m])
-            r = recursion(nei_list, nodes[m:])
+            m = (ridx + lidx) // 2
+            l = recursion(nei_list, lidx, m)
+            r = recursion(nei_list, m, ridx)
             for t in node_types:
                 involved[t] = l[t].union(r[t])
         if rank == 0:
@@ -74,11 +79,10 @@ def update_involved_recursively(nei_list, rank):
         return involved
     if rank == 0:
         pbar.close()
-    return recursion(nei_list, list(nei_list.keys()))
+    return recursion(nei_list, 0, len(nei_list))
 
-def rwr_worker(adj_list, nodes_list, desc, rank, nei_list_subsets, involved_subsets):
-    # Each process uses a complete adj_list to construct an incomplete nei_list.
-    nei_list = {node : {t : [] for t in node_types} for node in nodes_list}  # OUT nei_list['p123']['u'] = ['u456', 'u789', ...]
+def rwr_worker(start_node, nei_list_subsets, involved_subsets, desc, j, nodes_len):
+    nei_list = {start_node : {t : [] for t in node_types}}  # OUT nei_list['p123']['u'] = ['u456', 'u789', ...]
 
     def try_add_neighbor(start_node, cur_node, num_neighs):
         t = cur_node[0]
@@ -111,47 +115,45 @@ def rwr_worker(adj_list, nodes_list, desc, rank, nei_list_subsets, involved_subs
             if (node[0], nn) in edges_to_enforce or (nn, node[0]) in edges_to_enforce:
                 enforce_edges(nei_list[node][nn], node, nn, max_uniq_neigh[nn])
     
-    it = tqdm(nodes_list, desc=desc + ' proc 0') if rank == 0 else nodes_list
-    for start_node in it:
-        cur_node = start_node
-        num_neighs, steps = 0, 0
-        while num_neighs < num_neigh_to_record and steps < max_steps:
-            rand_p = random.random()  # return p
-            if rand_p < restart_rate:
-                cur_node = start_node
-            else:
-                cur_node = random.choice(adj_list[cur_node])
-                num_neighs = try_add_neighbor(start_node, cur_node, num_neighs)
-            steps += 1
-        write_neighbor(start_node)
+    cur_node = start_node
+    num_neighs, steps = 0, 0
+    while num_neighs < num_neigh_to_record and steps < max_steps:
+        rand_p = random.random()  # return p
+        if rand_p < restart_rate:
+            cur_node = start_node
+        else:
+            cur_node = random.choice(adj_list[cur_node])
+            num_neighs = try_add_neighbor(start_node, cur_node, num_neighs)
+        steps += 1
+    write_neighbor(start_node)
     
-    involved = update_involved_recursively(nei_list, rank)
-    nei_list_subsets[rank] = nei_list
-    involved_subsets[rank] = involved
+    involved = update_involved_recursively(nei_list)
+    nei_list_subsets.append(nei_list)
+    involved_subsets.append(involved)
+    if j % 100 == 0:
+        print(desc, '{:7} {:7} {:.4}'.format(j, nodes_len, j/nodes_len))
 
-def update_involved_worker(nei_list, rank, involved_subsets):
+def update_involved_worker(nei_list, involved_subsets, i, total):
     # each process has its own subset of nei_list
-    involved = update_involved_recursively(nei_list, rank)
-    involved_subsets[rank] = involved
+    involved = update_involved_recursively(nei_list)
+    involved_subsets.append(involved)
+    if i % 100 == 0:
+        print('update_involved_worker {:7}/{:7} {:.4}'.format(i, total, i/total))
 
 def save_result_worker(nei_list, involved, t, return_dict):
-    max_val = max(list(max_uniq_neigh.values()))
-    mode_type = [k for k, v in max_uniq_neigh.items() if v == max_val][0]
-
     written = 0
     with open(os.path.join(output_dir, f'{t}_neighbors.txt'), 'w') as f:
-        it = tqdm(nei_list.items(), desc=f'write {t} neigh') if t == mode_type else nei_list.items()
-        for node, type_neighs in it:
+        for node, type_neighs in tqdm(nei_list.items(), desc=f'write {t} neigh'):
             if node[0] == t:
+                if all([len(type_neighs[t]) == 0 for t in node_types]):
+                    continue
                 f.write(node + ':')
                 for neig_type in node_types:
-                    if len(type_neighs[neig_type]) > 0:
-                        f.write(' ' + ' '.join(type_neighs[neig_type]))
-                        if len(type_neighs[neig_type]) < min_neigh[neig_type]:
-                            f.write(' <PADDING>' * (
-                                min_neigh[neig_type] - len(type_neighs[neig_type])
-                            ))
-                        written += len(type_neighs[neig_type])
+                    f.write(' ' + ' '.join(type_neighs[neig_type]))
+                    f.write((' ' + neig_type + 'PADDING') * (
+                        max(0, max_uniq_neigh[neig_type] - len(type_neighs[neig_type]))
+                    ))
+                    written += len(type_neighs[neig_type])
                 f.write('\n')
     with open(os.path.join(output_dir, f'{t}_involved.txt'), "w") as f:
         f.write(' '.join(list(involved[t])) + "\n")
@@ -160,51 +162,57 @@ def save_result_worker(nei_list, involved, t, return_dict):
     return_dict[t] = ret_str
 
 def random_walk_with_restart():
-    adj_list, nei_list, involved, nodes = dict(), dict(), dict(), dict()
+    nei_list, involved, nodes = dict(), dict(), dict()
     nodes = {t : set() for t in node_types}     # IN  nodes['p'] = {'p123', 'p456', ...}
     involved = {t : set() for t in node_types}  # OUT involved['p'] = {'p123', 'p456', ...}
+    manager = Manager()
 
-    def add_adjacent(m, n):  # IN  adj_list['p123'] = ['u456', 'n789', ...]
+    def add_adjacent(m, n):
         if m not in adj_list.keys():
             adj_list[m] = []
         adj_list[m].append(n)
 
+    def update_nei_list_subsets_recusive(nei_list_subsets):
+        length = len(nei_list_subsets)
+        if length == 0:
+            return dict()
+        if length == 1:
+            return nei_list_subsets[0]
+        l = update_nei_list_subsets_recusive(nei_list_subsets[:length//2])
+        r = update_nei_list_subsets_recusive(nei_list_subsets[length//2:])
+        l.update(r)
+        return l
+
+    def update_involved_subsets_recursive(involveds):
+        length = len(involveds)
+        if length == 0:
+            return {t : {} for t in node_types}
+        if length == 1:
+            return involveds[0]
+        l = update_involved_subsets_recursive(involveds[:length//2])
+        r = update_involved_subsets_recursive(involveds[length//2:])
+        for t in node_types:
+            l[t] = l[t].union(r[t])
+        return l
+
     def rwr(nodes_set, desc):
         nodes_list = list(nodes_set)
-        job_sz = (len(nodes_list) + num_process - 1) // num_process
-        jobs = []
-        manager = Manager()
-        nei_list_subsets, involved_subsets = manager.dict(), manager.dict()
-        for i in range(num_process):
-            mn, mx = i * job_sz, min((i + 1) * job_sz, len(nodes_list))
-            p = Process(target=rwr_worker, args=(adj_list, nodes_list[mn:mx], desc, i, nei_list_subsets, involved_subsets))
-            jobs.append(p)
-            p.start()
-        for p in jobs:
-            p.join()
-        for nei_list_subset in nei_list_subsets.values():  # TODO: speed up this by recursion
-            nei_list.update(nei_list_subset)
-        for involved_subset in involved_subsets.values():  # TODO: speed up this by recursion
-            for t in node_types:
-                involved[t] = involved[t].union(involved_subset[t])
+        nei_list_subsets, involved_subsets = manager.list(), manager.list()
+        with Pool(num_process) as p:
+            p.starmap(rwr_worker, [(nodes_list[i], nei_list_subsets, involved_subsets, desc, i, len(nodes_list)) for i in range(len(nodes_list))])
+        nei_list.update(update_nei_list_subsets_recusive(nei_list_subsets))
+        unioned_involved = update_involved_subsets_recursive(involved_subsets)
+        for t in node_types:
+            involved[t] = involved[t].union(unioned_involved[t])
 
     def update_involved():
         keys = list(nei_list.keys())
-        job_sz = (len(keys) + num_process - 1) // num_process
-        jobs = []
-        manager = Manager()
-        involved_subsets = manager.dict()
-        for i in range(num_process):
-            mn, mx = i * job_sz, min((i + 1) * job_sz, len(keys))
-            nei_list_subset = {keys[i] : nei_list[keys[i]] for i in range(mn, mx)}
-            p = Process(target=update_involved_worker, args=(nei_list_subset, i, involved_subsets))
-            jobs.append(p)
-            p.start()
-        for p in jobs:
-            p.join()
-        for involved_subset in involved_subsets.values():  # TODO: speed up this by recursion
-            for t in node_types:
-                involved[t] = involved[t].union(involved_subset[t])
+        involved_subsets = manager.list()
+        with Pool(num_process) as p:
+            p.starmap(update_involved_worker, [({keys[i]:nei_list[keys[i]]}, involved_subsets, i, len(keys)) for i in range(len(keys))])
+        unioned_involved = update_involved_subsets_recursive(involved_subsets)
+        for t in node_types:
+            involved[t] = involved[t].union(unioned_involved[t])
     
     def compute_stats():
         stats = {t1: {t2: [] for t2 in node_types} for t1 in node_types}
@@ -214,18 +222,12 @@ def random_walk_with_restart():
         for t1 in node_types:
             for t2 in node_types:
                 print('stats', t1, t2, '{:.6f}'.format(
-                    sum(stats[t1][t2]) / len(stats[t1][t2])))
+                    sum(stats[t1][t2]) / len(stats[t1][t2]) if len(stats[t1][t2]) > 0 else 0))
     
     def save_result():
-        jobs = []
-        manager = Manager()
         return_dict = manager.dict()
-        for t in node_types:
-            p = Process(target=save_result_worker, args=(nei_list, involved, t, return_dict))
-            jobs.append(p)
-            p.start()
-        for p in jobs:
-            p.join()
+        with Pool(len(node_types)) as p:
+            p.starmap(save_result_worker, [(nei_list, involved, t, return_dict) for t in node_types])
         for ret_str in return_dict.values():
             print(ret_str)
 
@@ -242,31 +244,22 @@ def random_walk_with_restart():
                     add_adjacent(neig_type + l[1], main_type + l[0])
                     nodes[main_type].add(main_type + l[0])
                     nodes[neig_type].add(neig_type + l[1])
-    # ############################################################################### toy input
-    # for (n1, n2) in {('n1','n2'),('n1','p1'),('n2','p2'),('p1','u1'),('p1','u2'),('p2','u2'),('u1','u2')}:
-    #     add_adjacent(n1, n2)
-    #     add_adjacent(n2, n1)
-    #     nodes[n1[0]].add(n1)
-    #     nodes[n2[0]].add(n2)  
-    # ###############################################################################
 
     print("Each node takes turns to be the starting node...")
     rwr(nodes['n'], 'news rwr')
     rwr(involved['p'], 'post rwr')
     rwr(involved['u'], 'user rwr')
-
-    print('Stats before padding:')
-    compute_stats()
     update_involved()
 
     print("Save the result...")
     save_result()
+    compute_stats()
 
 
 if __name__ == "__main__":
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
 
-    print("\n" + " - " * 10 + configuration_tag + " - " * 10 + "\n")
+    print("\n" + "- " * 10 + configuration_tag + " -" * 10 + "\n")
     print('Files output to', output_dir)
     random_walk_with_restart()

@@ -49,6 +49,8 @@ for dl in dls:
             print('except Exception as e:', lines[ptr], e.__repr__())
         while ptr < len(lines) and not lines[ptr].startswith('twython.exceptions.TwythonError:'):
             ptr += 1
+        if ptr == len(lines):
+            break
         found = False
         for msg in again.keys():
             if lines[ptr].startswith(msg):
@@ -66,6 +68,7 @@ for dl in dls:
         if not found:
             print('if not found:', tid, lines[ptr])
         ptr += 1
+
 
 pp.pprint(again)
 pp.pprint(not_again)
