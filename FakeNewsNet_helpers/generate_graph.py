@@ -8,13 +8,9 @@ from multiprocessing import Manager, Pool
 
 in_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/code/fakenewsnet_dataset'
 out_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/graph_def'
-datasets = [
-    # ('politifact', 'fake'), 
-    # ('politifact', 'real'), 
-    ('gossipcop', 'fake'),
-    ('gossipcop', 'real'),
-]
-num_process = 16
+datasets = ['politifact'] #, 'gossipcop']
+subsets = ['fake', 'real']
+num_process = 4
 
 def process_worker(ds_dir, news_id, return_list, i, news_ids_len):
     print('process_worker {:7} {:7} {:.4f}'.format(i, news_ids_len, i / news_ids_len))
@@ -65,10 +61,10 @@ def process_worker(ds_dir, news_id, return_list, i, news_ids_len):
                 print('Error reading retweet:', e.__repr__(), os.path.join(retweet_dir, fname))
     return_list.append((np_edges, pu_edges, uu_edges, source_news, author_news))
 
-def process(ds, ss):
+def process(ds):
     nn_edges, np_edges, pu_edges, uu_edges = [], [], [], []
     source_news, author_news = dict(), dict()
-    for ds, ss in datasets:
+    for ss in subsets:
         news_ids = os.listdir(os.path.join(in_dir, ds, ss))
         manager = Manager()
         return_list = manager.list()
@@ -116,14 +112,11 @@ def process(ds, ss):
     od = os.path.join(out_dir, ds)
     if not os.path.isdir(od):
         os.mkdir(od)
-    od = os.path.join(od, ss)
-    if not os.path.isdir(od):
-        os.mkdir(od)
     for k, v in fname_dict.items():
         with open(os.path.join(od, k + '.txt'), 'w') as f:
             f.write('\n'.join([' '.join(e) for e in v]) + '\n')
 
 
 if __name__ == '__main__':
-    for ds, ss in datasets:
-        process(ds, ss)
+    for dataset in datasets:
+        process(dataset)

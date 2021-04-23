@@ -5,19 +5,15 @@
 import random
 from tqdm import tqdm
 import os
-from multiprocessing import Process, Manager, Pool
+from multiprocessing import Manager, Pool
 
 # overall
 num_process = 16
 
 # input
 in_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/graph_def'
-edge_dirs = [
-    # os.path.join(in_dir, 'politifact', 'fake'),
-    # os.path.join(in_dir, 'politifact', 'real'),
-    os.path.join(in_dir, 'gossipcop', 'fake'),
-    os.path.join(in_dir, 'gossipcop', 'real'),
-]
+# dataset = 'politifact'
+dataset = 'gossipcop'
 node_types = ['n', 'p', 'u']
 edge_files = {
     ('n', 'n'): 'news-news edges.txt',
@@ -47,8 +43,7 @@ max_uniq_neigh = {
 }
 
 # output
-configuration_tag = 'fnn_gossipcop_' + \
-    '_'.join([f'{k}{max_uniq_neigh[k]}' for k in node_types])  ##########################################
+configuration_tag = f'fnn_{dataset}_' + '_'.join([f'{k}{max_uniq_neigh[k]}' for k in node_types])
 output_dir = f"rwr_results/{configuration_tag}"
 
 # global
@@ -60,7 +55,7 @@ def update_involved_recursively(nei_list, rank = -1):
     nodes = list(nei_list.keys())
     if rank == 0:
         pbar = tqdm(total=len(nei_list) * 2 - 1, desc='update_involved')
-    def recursion(nei_list, lidx, ridx):
+    def recursion(lidx, ridx):
         # speedup intuition: ∑_{i=1...2^3} log(i) < ∑_{i=0...k} 2^i * log(2^{k-i})
         # nei_list is pass-by-ref; nodes are in [lidx, ridx)
         involved = dict()
@@ -70,8 +65,8 @@ def update_involved_recursively(nei_list, rank = -1):
             involved[nodes[lidx][0]].add(nodes[lidx])
         else:
             m = (ridx + lidx) // 2
-            l = recursion(nei_list, lidx, m)
-            r = recursion(nei_list, m, ridx)
+            l = recursion(lidx, m)
+            r = recursion(m, ridx)
             for t in node_types:
                 involved[t] = l[t].union(r[t])
         if rank == 0:
@@ -79,7 +74,7 @@ def update_involved_recursively(nei_list, rank = -1):
         return involved
     if rank == 0:
         pbar.close()
-    return recursion(nei_list, 0, len(nei_list))
+    return recursion(0, len(nei_list))
 
 def rwr_worker(start_node, nei_list_subsets, involved_subsets, desc, j, nodes_len):
     nei_list = {start_node : {t : [] for t in node_types}}  # OUT nei_list['p123']['u'] = ['u456', 'u789', ...]
@@ -130,8 +125,7 @@ def rwr_worker(start_node, nei_list_subsets, involved_subsets, desc, j, nodes_le
     involved = update_involved_recursively(nei_list)
     nei_list_subsets.append(nei_list)
     involved_subsets.append(involved)
-    if j % 100 == 0:
-        print(desc, '{:7} {:7} {:.4}'.format(j, nodes_len, j/nodes_len))
+    print(desc, '{:7} {:7} {:.4}'.format(j, nodes_len, j/nodes_len))
 
 def update_involved_worker(nei_list, involved_subsets, i, total):
     # each process has its own subset of nei_list
@@ -173,27 +167,31 @@ def random_walk_with_restart():
         adj_list[m].append(n)
 
     def update_nei_list_subsets_recusive(nei_list_subsets):
-        length = len(nei_list_subsets)
-        if length == 0:
-            return dict()
-        if length == 1:
-            return nei_list_subsets[0]
-        l = update_nei_list_subsets_recusive(nei_list_subsets[:length//2])
-        r = update_nei_list_subsets_recusive(nei_list_subsets[length//2:])
-        l.update(r)
-        return l
+        def _update_nei_list_subsets_recusion(lidx, ridx):  # [lidx, ridx)
+            if ridx - lidx == 0:
+                return dict()
+            if ridx - lidx == 1:
+                return nei_list_subsets[lidx]
+            midx = (lidx + ridx) // 2
+            l = _update_nei_list_subsets_recusion(lidx, midx)
+            r = _update_nei_list_subsets_recusion(midx, ridx)
+            l.update(r)
+            return l
+        return _update_nei_list_subsets_recusion(0, len(nei_list_subsets))
 
     def update_involved_subsets_recursive(involveds):
-        length = len(involveds)
-        if length == 0:
-            return {t : {} for t in node_types}
-        if length == 1:
-            return involveds[0]
-        l = update_involved_subsets_recursive(involveds[:length//2])
-        r = update_involved_subsets_recursive(involveds[length//2:])
-        for t in node_types:
-            l[t] = l[t].union(r[t])
-        return l
+        def _update_involved_subsets_recursion(lidx, ridx):  # [lidx, ridx) 
+            if ridx - lidx == 0:
+                return {t : {} for t in node_types}
+            if ridx - lidx == 1:
+                return involveds[lidx]
+            midx = (lidx + ridx) // 2
+            l = _update_involved_subsets_recursion(lidx, midx)
+            r = _update_involved_subsets_recursion(midx, ridx)
+            for t in node_types:
+                l[t] = l[t].union(r[t])
+            return l
+        return _update_involved_subsets_recursion(0, len(involveds))
 
     def rwr(nodes_set, desc):
         nodes_list = list(nodes_set)
@@ -232,18 +230,18 @@ def random_walk_with_restart():
             print(ret_str)
 
     print("Read the graph...")
-    for edge_dir in edge_dirs:
-        print("Reading", edge_dir)
-        for (main_type, neig_type), edge_f in edge_files.items():
-            with open(os.path.join(edge_dir, edge_f), "r") as f:
-                for l in tqdm(f.readlines(), desc='read ' + main_type+' '+neig_type):  ########################################
-                    l = l.strip().split()
-                    if len(l) != 2:
-                        break  # gossipcop real does not have user edges for now
-                    add_adjacent(main_type + l[0], neig_type + l[1])
-                    add_adjacent(neig_type + l[1], main_type + l[0])
-                    nodes[main_type].add(main_type + l[0])
-                    nodes[neig_type].add(neig_type + l[1])
+    edge_dir = os.path.join(in_dir, dataset)
+    print("Reading", edge_dir)
+    for (main_type, neig_type), edge_f in edge_files.items():
+        with open(os.path.join(edge_dir, edge_f), "r") as f:
+            for l in tqdm(f.readlines(), desc='read ' + main_type+' '+neig_type):  ########################################
+                l = l.strip().split()
+                if len(l) != 2:
+                    break  # gossipcop real does not have user edges for now
+                add_adjacent(main_type + l[0], neig_type + l[1])
+                add_adjacent(neig_type + l[1], main_type + l[0])
+                nodes[main_type].add(main_type + l[0])
+                nodes[neig_type].add(neig_type + l[1])
 
     print("Each node takes turns to be the starting node...")
     rwr(nodes['n'], 'news rwr')

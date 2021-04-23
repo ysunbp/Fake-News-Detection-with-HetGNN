@@ -9,13 +9,10 @@ from weibo import save_embed_file
 
 # input
 in_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/code/fakenewsnet_dataset'
-ds_dirs = [
-    # os.path.join(in_dir, 'politifact', 'fake'),
-    # os.path.join(in_dir, 'politifact', 'real'),
-    os.path.join(in_dir, 'gossipcop', 'fake'),
-    os.path.join(in_dir, 'gossipcop', 'real'),
-]
-involved_dir = '/rwproject/kdd-db/20-rayw1/fyp_code/rwr_results/fnn_gossipcop_n5_p5_u100'  ##############
+# dataset = 'politifact'
+dataset = 'gossipcop'
+ds_dirs = [os.path.join(in_dir, dataset, ss) for ss in ['real', 'fake']]  #########################
+involved_dir = f'/rwproject/kdd-db/20-rayw1/fyp_code/rwr_results/fnn_{dataset}_n5_p5_u100'
 
 # output
 out_dir = '/rwproject/kdd-db/20-rayw1/FakeNewsNet/text_embeddings'
@@ -39,8 +36,7 @@ def embed_text_worker(texts, max_seq_len, config, rank, return_dict):
     num_batches = (len(texts) + batch_size - 1) // batch_size
     embedder = TextEmbedder(max_seq_len, config['model name'], device=device)
     features = torch.zeros(len(texts), embedder.embed_dim)
-    it = tqdm(range(num_batches), desc='embed text') if rank == 0 else range(num_batches)
-    for i in it:
+    for i in tqdm(range(num_batches), desc='embed text'):
         mn = i * batch_size
         mx = min(len(texts), (i + 1) * batch_size)
         features[mn:mx] = embedder(texts[mn:mx])[:, 0, :].squeeze(1)
@@ -55,7 +51,8 @@ def embed_text(ids, texts, max_seq_len, config, dir_name, num_process = 2):
     def skip_existed(id_list, text_list, dir_name):
         print('skip existed...')
         new_id_list, new_text_list = [], []
-        existed = set(os.listdir(os.path.join(out_dir, dir_name)))
+        dn = os.path.join(out_dir, dir_name)
+        existed = set([fn for fn in os.listdir(dn) if os.stat(os.path.join(dn,fn)).st_size > 0])
         for id, text in zip(tqdm(id_list, desc='skip existed'), text_list):
             if id + '.txt' not in existed:
                 new_id_list.append(id)
@@ -69,18 +66,15 @@ def embed_text(ids, texts, max_seq_len, config, dir_name, num_process = 2):
         if not os.path.isdir(dir):
             os.mkdir(dir)
         jobs = []
-        per_worker = (len(ids) + num_process - 1) // num_process
+        per_worker = (len(texts) + num_process - 1) // num_process
         for i in range(num_process):
-            mn, mx = i * per_worker, min((i+1)*per_worker, len(ids))
+            mn, mx = i * per_worker, min((i+1)*per_worker, len(texts))
             p = Process(target=embed_text_worker, args=(texts[mn:mx], max_seq_len, config, i, return_dict))
             jobs.append(p)
             p.start()
-        for p in jobs:
-            p.join()
-        features = torch.zeros((len(ids), return_dict[0].shape[1]))
         for i in range(num_process):
-            mn, mx = i * per_worker, min((i+1)*per_worker, len(ids))
-            features[mn:mx] = return_dict[i]
+            jobs[i].join()
+        features = torch.cat([return_dict[i] for i in range(num_process)], dim=0)
         return features
     def save_embeddings_parallel(ids, features):
         dir = os.path.join(out_dir, dir_name)
@@ -174,7 +168,7 @@ def process_user_worker(ds, news_id, involved_uids, return_list, i, total):
             except:
                 continue
     return_list.append(id_desc)
-    if i % 100 == 0:
+    if i % 20 == 0:
         print('process_user_worker {:7}/{:7} {:.5}'.format(i, total, i/total))
 
 def process_user_description(num_process = 8):
@@ -192,6 +186,6 @@ def process_user_description(num_process = 8):
         embed_text(ids, description, max_seq_len=49, config=configs['tweet'], dir_name='user_description', num_process=num_process)
 
 if __name__ == '__main__':
-    process_news()
-    process_tweets()
+    # process_news()
+    # process_tweets()
     process_user_description()

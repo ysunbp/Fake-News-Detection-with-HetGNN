@@ -47,7 +47,6 @@ for ds in dataset:
         uids = set()
         num_followers, num_friends = [], []
         img_processed_nid = set()
-
         news_list = os.listdir(os.path.join(ds_path, ds, ss))
         stats['# News articles'] += len(news_list)
         for nid in tqdm(news_list, desc=ds+' '+ss):
@@ -59,7 +58,6 @@ for ds in dataset:
             news_content_path = os.path.join(ds_path, ds, ss, nid, 'news content.json')
             tweet_path = os.path.join(ds_path, ds, ss, nid, 'tweets')
             retweet_path = os.path.join(ds_path, ds, ss, nid, 'retweets')
-
             has_content, has_tweets, has_retweets = False, False, False
             # if os.path.isfile(news_content_path):
             #     with open(news_content_path, 'r') as fin:
@@ -67,7 +65,6 @@ for ds in dataset:
             #         news_content = json.load(fin)
             #         stats['# News articles with text'] += 1 if len(news_content['text']) > 0 else 0
             #         stats['# News articles with image'] += 1 if len(news_content['top_img']) > 0 else 0
-
             if os.path.isdir(tweet_path):
                 has_tweets = True
                 tweet_list = os.listdir(tweet_path)
@@ -83,7 +80,6 @@ for ds in dataset:
                 #         has_retweets = True
                 if has_retweets:
                     stats['# News with retweets'] += 1
-            
             has_retweets, has_ne_retweets = False, False
             if os.path.isdir(retweet_path):
                 retweet_list = os.listdir(retweet_path)
@@ -103,13 +99,11 @@ for ds in dataset:
                     stats['# News with retweets downloaded'] += 1
                 if has_ne_retweets:
                     stats['# News w non-emp retweets downloaded'] += 1
-
         stats['# Users posting tweets'] = len(uids)
         stats['# Tweets with retweets'] = len(tweets_with_retweets)
         stats['Average # followers'] = sum(num_followers) / len(num_followers) if len(num_followers) > 0 else -1
         stats['Average # friends'] = sum(num_friends) / len(num_friends) if len(num_friends) > 0 else -1
         stats['# News images processed'] = len(img_processed_nid)
-
         print(ds, ss, 'ends')
         all_stats[ds][ss] = stats
 
@@ -120,10 +114,14 @@ print('\\toprule')
 print(' ' * 40, end = "")
 for ds in dataset:
     print(' & {:10} & {:10}'.format(ds, ds), end='')
+
+
 print('\\\\')
 print(' ' * 40, end = "")
 for i in range(2):
     print(' & {:10} & {:10}'.format('Fake', 'Real'), end='')
+
+    
 print('\\\\')
 
 print('\\midrule')
