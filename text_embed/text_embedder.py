@@ -21,12 +21,12 @@ class TextEmbedder(torch.nn.Module):
         max_len : int
 
         model_name : str
-            The name of the model, should be one of 'word2vec', 'xlm-roberta-base', 'xlm-roberta-large', 'vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news'
+            The name of the model, should be one of 'word2vec', 'xlm-roberta-base', 'xlm-roberta-large', 'vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news', 'jordan-m-young/buzz-article-gpt-2'
         model_path : str, optional
             The path to the w2v file / finetuned Transformer model path. Required for w2v.
         """
         
-        assert model_name in ['word2vec', 'xlm-roberta-base', 'xlm-roberta-large', 'vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news']
+        assert model_name in ['word2vec', 'xlm-roberta-base', 'xlm-roberta-large', 'vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news', 'jordan-m-young/buzz-article-gpt-2']
         self.max_seq_len = max_seq_len
         self.model_name = model_name
         self.device = torch.device(device)
@@ -38,7 +38,7 @@ class TextEmbedder(torch.nn.Module):
             self.tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-base', model_max_length=self.max_seq_len+1)
             self._load_weibo_w2v(model_path)
             self.embed_dim = 300
-        elif model_name in ['vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news']:
+        elif model_name in ['vinai/bertweet-base', 'mrm8488/t5-base-finetuned-summarize-news', 'jordan-m-young/buzz-article-gpt-2', 'jordan-m-young/buzz-article-gpt-2']:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, model_max_length=self.max_seq_len)
             self.model = AutoModel.from_pretrained(model_path, return_dict=True).to(self.device)  # T5 for news doesn't have 'add_pooling_layer' option
             self.embed_dim = 768
