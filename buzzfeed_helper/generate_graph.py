@@ -6,6 +6,9 @@ import os
 
 in_dir = '/Users/shanglinghsu/Workspaces/fyp/buzzfeed-kaggle'
 out_dir = '/Users/shanglinghsu/Workspaces/fyp/buzzfeed-kaggle'
+node_files = {
+    's' : 'BuzzFeedSource.txt',
+}
 edge_files = {
     ('s', 'n'): 'BuzzFeedSourceNews.txt',
     ('n', 'n'): 'BuzzFeedNewsNews.txt',
@@ -32,10 +35,16 @@ def process():
             d[e] = 0
         d[e] += 1
 
-    def write(d, fn):
+    def write_edge(d, fn):
         with open(os.path.join(out_dir, fn), 'w') as f:
             for (s, t), v in d.items():
                 f.write(f'{s}\t{t}\t{v}\n')
+    
+    def write_node(d, fn):
+        with open(os.path.join(out_dir, fn), 'w') as f:
+            l = sorted([(node, node_id) for node, node_id in d.items()], key=lambda x:x[1])
+            for node, node_id in l:
+                f.write(f'{node}\n')
 
     df = read_csv()
     sn_edges, nn_edges = dict(), dict()
@@ -52,8 +61,9 @@ def process():
             for n2 in news:
                 add(nn_edges, (n1, n2))
 
-    write(sn_edges, edge_files[('s', 'n')])
-    write(nn_edges, edge_files[('n', 'n')])
+    write_edge(sn_edges, edge_files[('s', 'n')])
+    write_edge(nn_edges, edge_files[('n', 'n')])
+    write_node(sources, node_files['s'])
 
 
 if __name__ == '__main__':

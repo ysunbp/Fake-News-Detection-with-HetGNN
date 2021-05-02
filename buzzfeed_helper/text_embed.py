@@ -34,13 +34,6 @@ def read_csv():
     df2 = pd.read_csv(open(os.path.join(in_dir, f'BuzzFeed_fake_news_content.csv'), 'r'))
     return df1.append(df2, ignore_index = True)
 
-df = read_csv()
-ids = [str(id)[:-8] for id in df['id']]
-texts = df['title'].tolist()
-max_seq_len=49
-config=configs['news']
-dir_name = 'news_titles'
-
 def embed_text(ids, texts, max_seq_len, config, dir_name, num_process=4):
     def save_embeddings(ids, features):
         dir = os.path.join(out_dir, dir_name)
