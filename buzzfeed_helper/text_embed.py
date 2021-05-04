@@ -34,17 +34,14 @@ def read_csv():
     df2 = pd.read_csv(open(os.path.join(in_dir, f'BuzzFeed_fake_news_content.csv'), 'r'))
     return df1.append(df2, ignore_index = True)
 
-def embed_text(ids, texts, max_seq_len, config, dir_name, num_process=4):
+def embed_text(ids, texts, max_seq_len, config, dir_name):
     def save_embeddings(ids, features):
         dir = os.path.join(out_dir, dir_name)
         if not os.path.isdir(dir):
             os.mkdir(dir)
-        for id in tqdm(ids, desc='save embed'):
-            save_embed_file(os.path.join(out_dir, dir_name), id, features[i])
+        for i in tqdm(range(len(ids)), desc='save embed'):
+            save_embed_file(os.path.join(out_dir, dir_name), ids[i], features[i])
     print('embed_text...')
-    dir = os.path.join(out_dir, dir_name)
-    if not os.path.isdir(dir):
-        os.mkdir(dir)
     batch_size = config['batch size']
     num_batches = (len(texts) + batch_size - 1) // batch_size
     embedder = TextEmbedder(max_seq_len, config['model name'], device=device)
